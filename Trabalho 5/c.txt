@@ -509,12 +509,6 @@ let a = x => y;
   return 0;
 }
 
---- Program output ---
-Erro: a variável 'y' não foi declarada.
-=== Console ===
-=== Vars ===
-|{ undefined: undefined; }|
-=== Pilha ===
 
 --- Expected output (exact text)---
 Erro: Não é permitido 'return' fora de funções.

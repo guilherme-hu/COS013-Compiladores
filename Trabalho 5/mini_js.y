@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <sstream>
 #include <algorithm>
 
@@ -193,6 +194,54 @@ bool deve_capturar (string var){
   return false; // variável não encontrada em nenhum escopo, não captura
 }
 
+vector<set<string>> pilha_capturas; // Pilha de conjuntos de variáveis capturadas
+
+void empilha_capturas() {
+  pilha_capturas.push_back(set<string>());
+}
+
+void desempilha_capturas() {
+  if (!pilha_capturas.empty()) {
+    pilha_capturas.pop_back();
+  }
+}
+
+void adiciona_captura(string var) {
+  if (!pilha_capturas.empty()) {
+    pilha_capturas.back().insert(var);
+  }
+}
+
+set<string> capturas_atuais() {
+  return pilha_capturas.empty() ? set<string>() : pilha_capturas.back();
+}
+
+
+// Gera código para criar o campo captura com as variáveis
+vector<string> gera_codigo_captura(const set<string>& capturas) {
+  if (capturas.empty()) {
+    return vector<string>();
+  }
+  
+  vector<string> codigo;
+  // Cria campo 'captura' como objeto vazio
+  codigo += "'captura'";
+  codigo += "{}";
+  
+  // Para cada variável capturada, adiciona ao objeto captura
+  for (const string& var : capturas) {
+    codigo += "'" + var + "'";
+    codigo += var;
+    codigo += "@";
+    codigo += "[<=]";
+  }
+  
+  codigo += "[<=]"; // Atribui o objeto captura à função
+  
+  return codigo;
+}
+
+
 // define se estamos compilando ou não uma expressão lambda (que pode estar dentro de uma expressão lambda)
 int aninhamento_lambda = 0; 
 
@@ -242,12 +291,13 @@ void incrementa_indice_array() {
 %token CDOUBLE CSTRING CINT
 %token AND OR ME_IG MA_IG DIF IGUAL
 %token MAIS_IGUAL MAIS_MAIS MENOS_IGUAL MENOS_MENOS
-%token SETA FPL
+%token SETA FPL PARAM_EQ
 // FPL = Fecha Parênteses Lambda - se precisa de comentário para explicar o nome da variável, é porque isso nõ tá bom
 
 %right ','
 %left ':'
 %right '=' MAIS_IGUAL MENOS_IGUAL SETA '?'
+%right FPL
 %nonassoc OR AND
 %nonassoc IGUAL DIF
 %nonassoc '<' '>' ME_IG MA_IG
@@ -414,7 +464,7 @@ PARAMs : PARAMs ',' PARAM
           if( $3.valor_default.size() > 0 ) {
              string lbl_fim_if = gera_label( "fim_default_if" );
              $$.c += $3.c + "@" + "undefined" + "@" + "==" +
-                      "!" + lbl_fim_if + "?" +             // <-- acrescenta '!' aqui
+                      "!" + lbl_fim_if + "?" +           
                       $3.c + $3.valor_default + "=" + "^" +
                       define_label( lbl_fim_if );
            }
@@ -428,7 +478,7 @@ PARAMs : PARAMs ',' PARAM
                 string lbl_fim_if = gera_label( "fim_default_if" );
                 string def_lbl_fim_if = define_label( lbl_fim_if );
                 $$.c += $1.c + "@" + "undefined" + "@" + "==" +
-                          "!" + lbl_fim_if + "?" +         // <-- e aqui
+                          "!" + lbl_fim_if + "?" +       
                           $1.c + $1.valor_default + "=" + "^" +
                           define_label( lbl_fim_if );
             }
@@ -455,7 +505,7 @@ PARAM : ID {  $$.c = $1.c;
 
 CMD_RETURN : RETURN EOBJ ';'
              { if (alinhamento_return.empty()) { 
-                 cerr << "Erro: 'return' fora de função." << endl; 
+                 cerr << "Erro: Não é permitido 'return' fora de funções." << endl; 
                  exit(1); 
                }
                vector<string> pops;
@@ -465,7 +515,7 @@ CMD_RETURN : RETURN EOBJ ';'
              }
            | RETURN ';'
              { if (alinhamento_return.empty()) { 
-                 cerr << "Erro: 'return' fora de função." << endl; 
+                 cerr << "Erro: Não é permitido 'return' fora de funções." << endl; 
                  exit(1); 
                }
                vector<string> pops;
@@ -550,9 +600,16 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
           ts.push_back( map<string, Simbolo>{} );
           declara_variavel(Var, $1, $1.linha, $1.coluna);
           aninhamento_lambda++; 
+          in_func++;
+          alinhamento_return.push_back(0);
+          empilha_capturas();
         } 
         ATRIB 
         { aninhamento_lambda--;
+          in_func--;
+          alinhamento_return.pop_back();
+          set<string> capturas = capturas_atuais();
+          desempilha_capturas();
           ts.pop_back();
           
           string lbl_func = gera_label("lambda");
@@ -560,6 +617,7 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
           
           // Gera objeto função
           $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+          $$.c += gera_codigo_captura(capturas);
           
           // Lambda com expressão tem return implícito
           funcoes = funcoes + def_lbl 
@@ -571,9 +629,16 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
           ts.push_back( map<string, Simbolo>{} );
           declara_variavel(Var, $1, $1.linha, $1.coluna);
           aninhamento_lambda++; 
+          in_func++;
+          alinhamento_return.push_back(0);
+          empilha_capturas();
         } 
         BLOCO 
         { aninhamento_lambda--;
+          in_func--;
+          alinhamento_return.pop_back();
+          set<string> capturas = capturas_atuais();
+          desempilha_capturas();
           ts.pop_back();
           
           string lbl_func = gera_label("lambda");
@@ -581,6 +646,7 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
           
           // Gera objeto função
           $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+          $$.c += gera_codigo_captura(capturas);
           
           // Lambda com expressão tem return implícito
           funcoes = funcoes + def_lbl 
@@ -593,18 +659,22 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
           aninhamento_lambda++; 
           in_func++;
           alinhamento_return.push_back(0);
+          empilha_capturas();
         } 
         ATRIB 
         { 
           aninhamento_lambda--;
           in_func--;
           alinhamento_return.pop_back();
+          set<string> capturas = capturas_atuais();
+          desempilha_capturas();
           ts.pop_back(); // LISTA_PARAMs já empilhou
           
           string lbl_func = gera_label("lambda");
           string def_lbl = ":" + lbl_func;
           
           $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+          $$.c += gera_codigo_captura(capturas);
           
           // Lambda com expressão tem return implícito
           funcoes = funcoes + def_lbl 
@@ -617,18 +687,22 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
           aninhamento_lambda++; 
           in_func++;
           alinhamento_return.push_back(0);
+          empilha_capturas();
         } 
         BLOCO 
         { 
           aninhamento_lambda--;
           in_func--;
           alinhamento_return.pop_back();
+          set<string> capturas = capturas_atuais();
+          desempilha_capturas();
           ts.pop_back();
           
           string lbl_func = gera_label("lambda");
           string def_lbl = ":" + lbl_func;
           
           $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+          $$.c += gera_codigo_captura(capturas);
           
           funcoes = funcoes + def_lbl 
                   + $2.c  // código dos parâmetros
@@ -640,7 +714,7 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
         { string lbl_else = gera_label("else_cond");
           string lbl_fim = gera_label("fim_cond");
           $$.c = $1.c +
-                  "!" + lbl_else + "?" +    // se falso, vai para else
+                  "!" + lbl_else + "?" +     // se falso, vai para else
                   $3.c +                     // então
                   lbl_fim + "#" +            // pula para o fim
                   define_label(lbl_else) +   // else
@@ -652,7 +726,7 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
 // Operadores binários e atribuição
 E : LVALUE  { checa_simbolo( $1.c[0], false ); 
               if(aninhamento_lambda>0){
-                if(deve_capturar($1.c[0])) cout << "Capturando variável '" << $1.c[0] << "' na expressão lambda." << endl;
+                if(deve_capturar($1.c[0])) adiciona_captura($1.c[0]);
               }    
               $$.c = $1.c + "@"; } 
   | LVALUEPROP { $$.c = $1.esq + $1.dir + "[@]"; }
@@ -714,11 +788,14 @@ E : LVALUE  { checa_simbolo( $1.c[0], false );
   | FUNCTION '(' LISTA_PARAMs ')' '{' 
     { aninhamento_lambda++; 
       in_func++;
-      alinhamento_return.push_back(0); } 
+      alinhamento_return.push_back(0);
+      empilha_capturas();} 
     CMDs '}' 
     { aninhamento_lambda--;
       in_func--;
       alinhamento_return.pop_back();
+      set<string> capturas = capturas_atuais();
+      desempilha_capturas();
       ts.pop_back();  // LISTA_PARAMs empilhou
       
       string lbl_func = gera_label("anonima");
@@ -726,6 +803,7 @@ E : LVALUE  { checa_simbolo( $1.c[0], false );
       
       // Gera objeto função
       $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+      $$.c += gera_codigo_captura(capturas);
       
       // Código da função
       funcoes = funcoes + def_lbl 
@@ -736,17 +814,21 @@ E : LVALUE  { checa_simbolo( $1.c[0], false );
    | FUNCTION '(' LISTA_PARAMs ')' '{' 
     { aninhamento_lambda++; 
       in_func++;
-      alinhamento_return.push_back(0); } 
+      alinhamento_return.push_back(0); 
+      empilha_capturas(); } 
     '}' 
     { aninhamento_lambda--;
       in_func--;
       alinhamento_return.pop_back();
+      set<string> capturas = capturas_atuais();
+      desempilha_capturas();
       ts.pop_back();
       
       string lbl_func = gera_label("anonima");
       string def_lbl = ":" + lbl_func;
       
       $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+      $$.c += gera_codigo_captura(capturas);
       
       funcoes = funcoes + def_lbl 
               + $3.c
