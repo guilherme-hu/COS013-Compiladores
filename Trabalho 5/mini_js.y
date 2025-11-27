@@ -110,18 +110,6 @@ Atributos declara_variavel( TipoDecl decl, Atributos atrib, int linha, int colun
   return atrib;
 }
 
-bool deve_capturar (string var){
-  for (int i = (int)ts.size() - 1; i >= 0; --i) {
-    auto& esc = ts[i];
-    auto it = esc.find(var);
-    if (it != esc.end()) {
-      return false; // encontrada na tabela de símbolos
-    }
-  }
-  return true; // não encontrada, deve capturar
-}
-
-
 const string JUMP = "#";
 const string JUMP_TRUE = "?";
 const string POP = "^";
@@ -167,7 +155,7 @@ void checa_simbolo( string nome, bool modificavel ) {
   }
 
   // Permite referência a variáveis externas ainda não declaradas quando dentro de função (leitura)
-  if (!modificavel && in_func > 0) {
+  if (in_func > 0) {
     return; // será resolvido em tempo de execução
   }
 
@@ -191,6 +179,60 @@ string gera_temp( string nome ) {
   return string("temp_") + nome + to_string(++t);
 }
 
+
+// Determina se dcommo corrigir esse erro de shift reducee ou não capturar uma variável
+bool deve_capturar (string var){
+  if (ts.back().count(var) > 0) {
+    return false; // variável está no escopo atual, não captura
+  }
+  for (int i = 1; i < ts.size() - 1; i++) {
+    if (ts[i].count(var) > 0) {
+      return true; // variável encontrada em escopo anterior (exceto global), deve capturar
+    }
+  }
+  return false; // variável não encontrada em nenhum escopo, não captura
+}
+
+// define se estamos compilando ou não uma expressão lambda (que pode estar dentro de uma expressão lambda)
+int aninhamento_lambda = 0; 
+
+Atributos declara_param( Atributos& params, Atributos param, vector<string> inicializacao){
+  Atributos resultado = declara_variavel(Let, param, param.linha, param.coluna);
+
+  params.c += resultado.c;
+  return params; 
+}
+
+
+vector<string> pilha_arrays;   // Guarda o nome da variável do array
+vector<int> pilha_indices;     // Guarda o índice atual sendo preenchido
+
+void empilha_array(string nome) {
+  pilha_arrays.push_back(nome);
+  pilha_indices.push_back(0);
+}
+
+void desempilha_array() {
+  if (!pilha_arrays.empty()) {
+    pilha_arrays.pop_back();
+    pilha_indices.pop_back();
+  }
+}
+
+string nome_array_atual() {
+  return pilha_arrays.empty() ? "" : pilha_arrays.back();
+}
+
+int indice_array_atual() {
+  return pilha_indices.empty() ? 0 : pilha_indices.back();
+}
+
+void incrementa_indice_array() {
+  if (!pilha_indices.empty()) {
+    pilha_indices.back()++;
+  }
+}
+
 %}
 
 %token ID LET CONST VAR
@@ -200,9 +242,12 @@ string gera_temp( string nome ) {
 %token CDOUBLE CSTRING CINT
 %token AND OR ME_IG MA_IG DIF IGUAL
 %token MAIS_IGUAL MAIS_MAIS MENOS_IGUAL MENOS_MENOS
+%token SETA FPL
+// FPL = Fecha Parênteses Lambda - se precisa de comentário para explicar o nome da variável, é porque isso nõ tá bom
 
-
-%right '=' MAIS_IGUAL MENOS_IGUAL
+%right ','
+%left ':'
+%right '=' MAIS_IGUAL MENOS_IGUAL SETA '?'
 %nonassoc OR AND
 %nonassoc IGUAL DIF
 %nonassoc '<' '>' ME_IG MA_IG
@@ -224,18 +269,22 @@ CMDs : CMD CMDs { $$.c = $1.c + $2.c; };
 
 // ; faz parte do comando, bloco por exemplo não termina com ;
 CMD : DECL ';'
-    | E ';' { $$.c = $1.c + "^"; }
+    | ATRIB ';' { $$.c = $1.c + "^"; }
     | CMD_IF
     | CMD_FOR
     | CMD_WHILE
     | ';' { $$.clear(); } // comando vazio
-    | '{' EMPILHA_TS { if (!alinhamento_return.empty()) alinhamento_return.back()++; }  // Empilha escopo novo
-      CMDs '}' { if (!alinhamento_return.empty()) alinhamento_return.back()--; ts.pop_back(); $$.c = "<{" + $4.c + "}>"; }
     | CMD_FUNC 
     | CMD_RETURN
     | E ASM ';' 	{ $$.c = $1.c + $2.c + "^"; }
+    | BLOCO
     ;
-    
+
+BLOCO : '{' EMPILHA_TS { if (!alinhamento_return.empty()) alinhamento_return.back()++; } CMDs '}' // Empilha escopo novo
+       { if (!alinhamento_return.empty()) alinhamento_return.back()--; ts.pop_back(); $$.c = "<{" + $4.c + "}>"; }
+      | '{' '}' { $$.c = vector<string>{"<{", "}>"}; }
+      ;
+
 DECL : LET LET_IDs { $$.c = $2.c; }
      | CONST CONST_IDs { $$.c = $2.c; }
      | VAR VAR_IDs {$$.c = $2.c;}
@@ -247,9 +296,12 @@ LET_IDs: LET_UM_ID ',' LET_IDs
         ;
 
 LET_UM_ID : ID { $$ = declara_variavel( Let, $1, $1.linha, $1.coluna); }
-          | ID '=' E {$$ = declara_variavel( Let, $1, $1.linha, $1.coluna); 
-                      $$.c = $$.c + $1.c + $3.c + "=" + "^"; }
+          | ID '=' { empilha_array($1.c[0]); } EOBJ 
+            { desempilha_array();
+              $$ = declara_variavel( Let, $1, $1.linha, $1.coluna); 
+              $$.c = $$.c + $1.c + $4.c + "=" + "^"; }
           ;
+
 
 CONST_IDs : CONST_UM_ID ',' CONST_IDs
             { $$.c = $1.c + $3.c; }
@@ -257,9 +309,12 @@ CONST_IDs : CONST_UM_ID ',' CONST_IDs
             ;
 
 CONST_UM_ID : ID {$$ = declara_variavel ( Const, $1, $1.linha, $1.coluna); }
-             | ID '=' E {$$ = declara_variavel( Const, $1, $1.linha, $1.coluna ); 
-                         $$.c = $$.c + $1.c + $3.c + "=" + "^";}
-             ;
+            | ID '=' { empilha_array($1.c[0]); } EOBJ 
+              { desempilha_array();
+                $$ = declara_variavel( Const, $1, $1.linha, $1.coluna); 
+                $$.c = $$.c + $1.c + $4.c + "=" + "^"; }
+            ;
+
 
 VAR_IDs : VAR_UM_ID ',' VAR_IDs
         { $$.c = $1.c + $3.c; }
@@ -267,16 +322,17 @@ VAR_IDs : VAR_UM_ID ',' VAR_IDs
         ;
 
 VAR_UM_ID : ID { $$ = declara_variavel( Var, $1, $1.linha, $1.coluna ); }
-          | ID '=' E {$$ = declara_variavel( Var, $1, $1.linha, $1.coluna ); 
-                      $$.c = $$.c + $1.c + $3.c + "=" + "^";}
+          | ID '=' { empilha_array($1.c[0]); } EOBJ 
+            { desempilha_array();
+              $$ = declara_variavel( Var, $1, $1.linha, $1.coluna); 
+              $$.c = $$.c + $1.c + $4.c + "=" + "^"; }
           ;
 
-
-CMD_IF : IF '(' E ')' CMD
+CMD_IF : IF '(' EOBJ ')' CMD
          { string fim_if = gera_label("fim_if");
            $$.c = $3.c + "!" + fim_if  + "?" + $5.c + define_label(fim_if);
          }
-       | IF '(' E ')' CMD ELSE CMD
+       | IF '(' EOBJ ')' CMD ELSE CMD
          { string fim_if = gera_label("fim_if");
            string else_if = gera_label("else");
 
@@ -287,7 +343,7 @@ CMD_IF : IF '(' E ')' CMD
          }
       ;
 
-CMD_FOR : FOR '(' SF ';' E ';' EF ')' CMD
+CMD_FOR : FOR '(' SF ';' EOBJ ';' EF ')' CMD
          { string teste_for = gera_label("teste_for");
            string fim_for = gera_label("fim_for");
 
@@ -301,7 +357,7 @@ CMD_FOR : FOR '(' SF ';' E ';' EF ')' CMD
          }
        ;
 
-EF : E {$$.c = $1.c + "^";}
+EF : EOBJ {$$.c = $1.c + "^";}
    | {$$.clear();}
    ;
 // SEMPRE QUE TIVER UMA EXPRESSÃO VAZIA, PRECISA DE UM $$.clear()
@@ -310,7 +366,7 @@ SF : DECL
    | EF
    ;
 
-CMD_WHILE : WHILE '(' E ')' CMD
+CMD_WHILE : WHILE '(' EOBJ ')' CMD
            { string teste_while = gera_label("teste_while");
              string fim_while = gera_label("fim_while");
 
@@ -325,8 +381,11 @@ CMD_WHILE : WHILE '(' E ')' CMD
 EMPILHA_TS : { ts.push_back( map< string, Simbolo >{} ); } // cria uma nova tabela de símbolos na pilha de tabelas
            ;
 
+/* DESEMPILHA_TS : { ts.pop_back(); } // remove a tabela de símbolos do topo da pilha de tabelas
+           ; */
+
 CMD_FUNC : FUNCTION ID { $$ = declara_variavel( Var, $2, $2.linha, $2.coluna ); }
-          '(' EMPILHA_TS { ++in_func; alinhamento_return.push_back(0); } LISTA_PARAMs ')' '{' CMDs '}'
+          '(' EMPILHA_TS { ++in_func; alinhamento_return.push_back(0); } LISTA_PARAMs ')' BLOCO
           { --in_func;
             alinhamento_return.pop_back(); // Sai do contexto de alinhamento desta função
 
@@ -337,14 +396,14 @@ CMD_FUNC : FUNCTION ID { $$ = declara_variavel( Var, $2, $2.linha, $2.coluna ); 
                   lbl_endereco_funcao + "[=]" + "^";
 
             // $7 = LISTA_PARAMs, $10 = CMDs (após inserir a mid-rule action)
-            funcoes = funcoes + definicao_lbl_endereco_funcao + $7.c + $10.c +
+            funcoes = funcoes + definicao_lbl_endereco_funcao + $7.c + $9.c +
                       "undefined" + "@" + "'&retorno'" + "@"+ "~";
             ts.pop_back();
           } //5+8
           ;
 
 LISTA_PARAMs : PARAMs 
-             | { $$.clear(); }
+             | EMPILHA_TS { $$.clear(); }
              ;
            
 PARAMs : PARAMs ',' PARAM 
@@ -360,8 +419,8 @@ PARAMs : PARAMs ',' PARAM
                       define_label( lbl_fim_if );
            }
            $$.contador = $1.contador + 1; }
-        | PARAMs ',' { $$.c = $1.c; $$.contador = $1.contador; }     
-        | PARAM { // a & a arguments @ 0 [@] = ^ 
+        /* | PARAMs ',' { $$.c = $1.c; $$.contador = $1.contador; }      */
+        | PARAM EMPILHA_TS { // a & a arguments @ 0 [@] = ^ 
             declara_variavel( Var, $1, $1.linha, $1.coluna );
             $$.c = $1.c + "&" + $1.c + "arguments" + "@" + "0" + "[@]" + "=" + "^"; 
                     
@@ -382,17 +441,19 @@ PARAM : ID {  $$.c = $1.c;
         $$.linha = $1.linha;
         $$.coluna = $1.coluna;
         $$.contador = 1;   
+        // declara_param($1, {});
       }
-      | ID '=' E { // Código do IF
+      | ID '=' EOBJ { // Código do IF
         $$.c = $1.c;
         $$.valor_default = $3.c;
         $$.linha = $1.linha;
         $$.coluna = $1.coluna;
         $$.contador = 1; 
+        // declara_param($1, $3.c);
         }
       ;
 
-CMD_RETURN : RETURN E ';'
+CMD_RETURN : RETURN EOBJ ';'
              { if (alinhamento_return.empty()) { 
                  cerr << "Erro: 'return' fora de função." << endl; 
                  exit(1); 
@@ -416,61 +477,185 @@ CMD_RETURN : RETURN E ';'
 LVALUE : ID { checa_simbolo( $1.c[0], false ); $$.c = $1.c; }
        ;
 
-LVALUEPROP : LVALUE '[' E ']'   { $$.c.clear(); $$.esq = $1.c + "@"; $$.dir = $3.c; }    // b[0]
+LVALUEPROP : LVALUE '[' EOBJ ']'   { $$.c.clear(); $$.esq = $1.c + "@"; $$.dir = $3.c; }    // b[0]
            | LVALUE '.' ID      { $$.c.clear(); $$.esq = $1.c + "@"; $$.dir = $3.c; }   // b.m 
-           | LVALUEPROP '[' E ']' { $$.c.clear(); $$.esq = $1.esq + $1.dir + "[@]"; $$.dir = $3.c; } 
+           | LVALUEPROP '[' EOBJ ']' { $$.c.clear(); $$.esq = $1.esq + $1.dir + "[@]"; $$.dir = $3.c; } 
            | LVALUEPROP '.' ID    { $$.c.clear(); $$.esq = $1.esq + $1.dir + "[@]"; $$.dir = $3.c; } 
-           | F '[' E ']'          { $$.c.clear(); $$.esq = $1.c; $$.dir = $3.c; }; 
+           | F '[' EOBJ ']'          { $$.c.clear(); $$.esq = $1.c; $$.dir = $3.c; }; 
            | F1 '.' ID            { $$.c.clear(); $$.esq = $1.c; $$.dir = $3.c; }
            ;
 
+EOBJ : '{' '}' { $$.c = vector<string>{"{}"}; } // Objeto vazio
+     | '{' CAMPOS '}' { $$.c = vector<string>{"{}"} + $2.c; } // Objeto com campos
+     | ATRIB
+     ;
+
+CAMPOS : CAMPO ',' CAMPOS { $$.c = $1.c + $3.c; }
+       | CAMPO
+       ;
+
+CAMPO : ID ':' EOBJ { $$.c = $1.c + $3.c + "[<=]"; }
+      | ID { $$.c = $1.c + "undefined" + "@" + "[<=]"; }
+      ;
+
+
+ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "="; }
+      | LVALUEPROP '=' EOBJ { $$.c = $1.esq + $1.dir + $3.c + "[=]"; }
+      | LVALUE MAIS_IGUAL EOBJ   { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $1.c + "@" + $3.c + "+" + "="; } // a += e  => a a @ e + =
+      | LVALUE MENOS_IGUAL EOBJ  { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $1.c + "@" + $3.c + "-" + "="; } // a -= e  => a a @ e - =
+      | LVALUEPROP MAIS_IGUAL EOBJ  {
+        string tB = gera_temp("esq"), tI = gera_temp("dir");
+        $$.c = vector<string>{
+          "<{",
+            tB, "&", tB
+        } + $1.esq + vector<string>{
+            "=", "^",
+            tI, "&", tI
+        } + $1.dir + vector<string>{
+            "=", "^",
+            // par para [=]
+            tB, "@", tI, "@",
+            // par para ler valor atual
+            tB, "@", tI, "@", "[@]"
+        } + $3.c + vector<string>{
+            "+",
+            "[=]",
+          "}>"
+        };
+      }
+      | LVALUEPROP MENOS_IGUAL EOBJ {
+        string tB = gera_temp("esq"), tI = gera_temp("dir");
+        $$.c = vector<string>{
+          "<{",
+            tB, "&", tB
+        } + $1.esq + vector<string>{
+            "=", "^",
+            tI, "&", tI
+        } + $1.dir + vector<string>{
+            "=", "^",
+            // par para [=]
+            tB, "@", tI, "@",
+            // par para ler valor atual
+            tB, "@", tI, "@", "[@]"
+        } + $3.c + vector<string>{
+            "-",
+            "[=]",
+          "}>"
+        };
+      }
+     | E
+
+
+     | ID SETA { 
+          ts.push_back( map<string, Simbolo>{} );
+          declara_variavel(Var, $1, $1.linha, $1.coluna);
+          aninhamento_lambda++; 
+        } 
+        ATRIB 
+        { aninhamento_lambda--;
+          ts.pop_back();
+          
+          string lbl_func = gera_label("lambda");
+          string def_lbl = ":" + lbl_func;
+          
+          // Gera objeto função
+          $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+          
+          // Lambda com expressão tem return implícito
+          funcoes = funcoes + def_lbl 
+                  + $1.c + "&" + $1.c + "arguments" + "@" + "0" + "[@]" + "=" + "^"
+                  + $4.c + "'&retorno'" + "@" + "~";
+        }
+
+     | ID SETA { 
+          ts.push_back( map<string, Simbolo>{} );
+          declara_variavel(Var, $1, $1.linha, $1.coluna);
+          aninhamento_lambda++; 
+        } 
+        BLOCO 
+        { aninhamento_lambda--;
+          ts.pop_back();
+          
+          string lbl_func = gera_label("lambda");
+          string def_lbl = ":" + lbl_func;
+          
+          // Gera objeto função
+          $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+          
+          // Lambda com expressão tem return implícito
+          funcoes = funcoes + def_lbl 
+                  + $1.c + "&" + $1.c + "arguments" + "@" + "0" + "[@]" + "=" + "^"
+                  + $4.c + "'&retorno'" + "@" + "~";
+        }
+
+     // Lambda com múltiplos parâmetros e expressão: (a, b) => expr
+     | '(' LISTA_PARAMs FPL SETA { 
+          aninhamento_lambda++; 
+          in_func++;
+          alinhamento_return.push_back(0);
+        } 
+        ATRIB 
+        { 
+          aninhamento_lambda--;
+          in_func--;
+          alinhamento_return.pop_back();
+          ts.pop_back(); // LISTA_PARAMs já empilhou
+          
+          string lbl_func = gera_label("lambda");
+          string def_lbl = ":" + lbl_func;
+          
+          $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+          
+          // Lambda com expressão tem return implícito
+          funcoes = funcoes + def_lbl 
+                  + $2.c  // código dos parâmetros
+                  + $6.c + "'&retorno'" + "@" + "~";
+        }
+
+     // Lambda com múltiplos parâmetros e bloco: (a, b) => { ... }
+     | '(' LISTA_PARAMs FPL SETA { 
+          aninhamento_lambda++; 
+          in_func++;
+          alinhamento_return.push_back(0);
+        } 
+        BLOCO 
+        { 
+          aninhamento_lambda--;
+          in_func--;
+          alinhamento_return.pop_back();
+          ts.pop_back();
+          
+          string lbl_func = gera_label("lambda");
+          string def_lbl = ":" + lbl_func;
+          
+          $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+          
+          funcoes = funcoes + def_lbl 
+                  + $2.c  // código dos parâmetros
+                  + $6.c  // bloco
+                  + "undefined" + "@" + "'&retorno'" + "@" + "~";
+        }
+        
+     | E '?' EOBJ ':' EOBJ
+        { string lbl_else = gera_label("else_cond");
+          string lbl_fim = gera_label("fim_cond");
+          $$.c = $1.c +
+                  "!" + lbl_else + "?" +    // se falso, vai para else
+                  $3.c +                     // então
+                  lbl_fim + "#" +            // pula para o fim
+                  define_label(lbl_else) +   // else
+                  $5.c +                     // senão
+                  define_label(lbl_fim);     // fim
+        }
+     ;
+      
 // Operadores binários e atribuição
-E : LVALUE { checa_simbolo( $1.c[0], false ); $$.c = $1.c + "@"; } 
+E : LVALUE  { checa_simbolo( $1.c[0], false ); 
+              if(aninhamento_lambda>0){
+                if(deve_capturar($1.c[0])) cout << "Capturando variável '" << $1.c[0] << "' na expressão lambda." << endl;
+              }    
+              $$.c = $1.c + "@"; } 
   | LVALUEPROP { $$.c = $1.esq + $1.dir + "[@]"; }
-  | LVALUE '=' E { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "="; }
-  | LVALUEPROP '=' E { $$.c = $1.esq + $1.dir + $3.c + "[=]"; }
-  | LVALUE MAIS_IGUAL E   { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $1.c + "@" + $3.c + "+" + "="; } // a += e  => a a @ e + =
-  | LVALUE MENOS_IGUAL E  { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $1.c + "@" + $3.c + "-" + "="; } // a -= e  => a a @ e - =
-  | LVALUEPROP MAIS_IGUAL E  {
-      string tB = gera_temp("esq"), tI = gera_temp("dir");
-      $$.c = vector<string>{
-        "<{",
-          tB, "&", tB
-      } + $1.esq + vector<string>{
-          "=", "^",
-          tI, "&", tI
-      } + $1.dir + vector<string>{
-          "=", "^",
-          // par para [=]
-          tB, "@", tI, "@",
-          // par para ler valor atual
-          tB, "@", tI, "@", "[@]"
-      } + $3.c + vector<string>{
-          "+",
-          "[=]",
-        "}>"
-      };
-    }
-  | LVALUEPROP MENOS_IGUAL E {
-      string tB = gera_temp("esq"), tI = gera_temp("dir");
-      $$.c = vector<string>{
-        "<{",
-          tB, "&", tB
-      } + $1.esq + vector<string>{
-          "=", "^",
-          tI, "&", tI
-      } + $1.dir + vector<string>{
-          "=", "^",
-          // par para [=]
-          tB, "@", tI, "@",
-          // par para ler valor atual
-          tB, "@", tI, "@", "[@]"
-      } + $3.c + vector<string>{
-          "-",
-          "[=]",
-        "}>"
-      };
-    }
   | MAIS_MAIS LVALUE { checa_simbolo( $2.c[0], true ); $$.c = $2.c + $2.c + "@" + "1" + "+" + "="; }
   | MENOS_MENOS LVALUE { checa_simbolo( $2.c[0], true ); $$.c = $2.c + $2.c + "@" + "1" + "-" + "="; }
   | MAIS_MAIS LVALUEPROP
@@ -525,7 +710,50 @@ E : LVALUE { checa_simbolo( $1.c[0], false ); $$.c = $1.c + "@"; }
   | '-' E     { $$.c = "0" + $2.c + "-"; } // unário -
   | '+' E     { $$.c = $2.c; }             // unário +
   | F
+
+  | FUNCTION '(' LISTA_PARAMs ')' '{' 
+    { aninhamento_lambda++; 
+      in_func++;
+      alinhamento_return.push_back(0); } 
+    CMDs '}' 
+    { aninhamento_lambda--;
+      in_func--;
+      alinhamento_return.pop_back();
+      ts.pop_back();  // LISTA_PARAMs empilhou
+      
+      string lbl_func = gera_label("anonima");
+      string def_lbl = ":" + lbl_func;
+      
+      // Gera objeto função
+      $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+      
+      // Código da função
+      funcoes = funcoes + def_lbl 
+              + $3.c  // parâmetros
+              + $7.c  // corpo
+              + "undefined" + "@" + "'&retorno'" + "@" + "~";
+    }
+   | FUNCTION '(' LISTA_PARAMs ')' '{' 
+    { aninhamento_lambda++; 
+      in_func++;
+      alinhamento_return.push_back(0); } 
+    '}' 
+    { aninhamento_lambda--;
+      in_func--;
+      alinhamento_return.pop_back();
+      ts.pop_back();
+      
+      string lbl_func = gera_label("anonima");
+      string def_lbl = ":" + lbl_func;
+      
+      $$.c = vector<string>{"{}", "'&funcao'", lbl_func, "[<=]"};
+      
+      funcoes = funcoes + def_lbl 
+              + $3.c
+              + "undefined" + "@" + "'&retorno'" + "@" + "~";
+    }
   ;
+  // pode criar uma função com os parametros certos (penultimo) e faz a função com base nela, usa a função para os outros e coloca parametro vazio
 
 F : F1
   | F2
@@ -535,9 +763,11 @@ F1 : CDOUBLE
    | CSTRING
    | TRUE  { $$.c = vector<string>{"true"}; }
    | FALSE { $$.c = vector<string>{"false"}; }
-   | '(' E ')' { $$.c = $2.c; }
-   | '[' ARGs ']' { $$.c = $2.c + "[]"; }
-   | CHAM_FUNC '(' ARGs ')'  { $$.c = $3.c + to_string($3.n_args) + $1.c + "$"; }
+   | '(' EOBJ ')' { $$.c = $2.c; }
+   | '[' { empilha_array(""); } ELEMS ']' 
+     { desempilha_array();
+       $$.c = vector<string>{"[]"} + $3.c; }
+   | CHAM_FUNC '(' LISTA_ARGS ')'  { $$.c = $3.c + to_string($3.n_args) + $1.c + "$"; }
    ;
 
 F2 : CINT
@@ -569,24 +799,41 @@ F2 : CINT
               + esq + "@" + dir + "@" + "[@]" 
               + "1" + "-" + "[=]" + "^" + "}>"; 
       }
-   | '{' '}' { $$.c = vector<string>{"{}"}; }
    ;
+
+ELEMS : ELEM ',' ELEMS { $$.c = $1.c + $3.c; }
+      | ELEM 
+      ;
+
+ELEM : EOBJ 
+       { // Gera: idx valor [<=]
+         $$.c = to_string(indice_array_atual()) + $1.c + "[<=]";
+         incrementa_indice_array();
+       }
+     | { // Gera: idx undefined [<=]
+         $$.c = vector<string>{ to_string(indice_array_atual()), "undefined", "@", "[<=]" };
+         incrementa_indice_array();
+       }
+     ;
 
 
 CHAM_FUNC : ID           { checa_simbolo($1.c[0], false); $$.c = $1.c + "@"; }
           | LVALUEPROP   { $$.c = $1.esq + $1.dir + "[@]"; }
-          | '(' E ')'    { $$.c = $2.c; }     // (log) retorna o rvalue do log
+          | '(' EOBJ ')' { $$.c = $2.c; }     // (log) retorna o rvalue do log
           ;
 
+LISTA_ARGS : ARGs
+          | { $$.clear(); $$.n_args = 0; }
+          ;
 
-ARGs : E ',' ARGs
+ARGs : EOBJ ',' ARGs
        { $$.c = $1.c + $3.c;
          $$.n_args = $3.n_args + 1; }
-     | E
+     | EOBJ
        { $$.c = $1.c;
          $$.n_args = 1; }
-     | { $$.clear();
-         $$.n_args = 0; }
+     /* | { $$.clear();
+         $$.n_args = 0; } */
      ;
 
 %%

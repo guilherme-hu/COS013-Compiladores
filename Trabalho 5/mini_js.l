@@ -64,6 +64,12 @@ STRING      (\"(\\\"|\"\"|[^"])*\")|\'(\\\'|\'\'|[^'])*\'
 "-="       { return token( MENOS_IGUAL ); }
 "--"       { return token( MENOS_MENOS ); }
 
+"=>"                            { return token( SETA ); }
+")"/[ \n\t\r]*"=>"              { return token( FPL ); }
+","[ \n\t\r]*")"/[ \n\t\r]*"=>" { return token( FPL ); }
+","/[ \n\t\r]*")"               { return token( ')' ); }
+"("[ \n\t\r]*","[ \n\t\r]*")"   { return token( 1 ); /* ERRO */ }
+
 "let"      { return token( LET ); }
 "const"    { return token( CONST ); }
 "var"      { return token( VAR ); }
