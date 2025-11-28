@@ -168,7 +168,10 @@ void trata_captura(string var) {
   // Optimization: check local scope first
   if (ts.back().count(var) > 0) return;
   
-  // Search from nearest scope upwards (skipping local)
+  // Check if variable is in global scope - global variables are never captured
+  if (ts[0].count(var) > 0) return;
+  
+  // Search from nearest scope upwards (skipping local and global)
   // ts.size() - 2 is the parent of local scope
   for (int i = ts.size() - 2; i >= 1; i--) {
     if (ts[i].count(var) > 0) {
@@ -307,6 +310,7 @@ void incrementa_indice_array() {
 %left '*' '/' '%'
 %left '.' 
 %left MAIS_MAIS MENOS_MENOS
+%left ASM
 
 %%
 
@@ -326,7 +330,6 @@ CMD : DECL ';'
     | ';' { $$.clear(); } // comando vazio
     | CMD_FUNC 
     | CMD_RETURN
-    | E ASM ';' 	{ $$.c = $1.c + $2.c + "^"; }
     | BLOCO
     ;
 

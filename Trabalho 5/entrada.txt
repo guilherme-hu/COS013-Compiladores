@@ -1,4 +1,13 @@
-let f = x => y => x*y;
-let b = f(9);
-let c = b(7);
-let d = f( 8.1 )( 7.1 );
+let log = msg => msg asm{println # undefined};
+
+function cria( nome ) {
+  let obj = { print: () => log( nome ) };
+
+  return () => obj;
+}
+
+let a = cria( "Oi" );
+
+cria( "Nada" )().print();
+
+a().print();
