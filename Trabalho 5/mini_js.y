@@ -142,7 +142,98 @@ string define_label( string prefixo ) {
   return ":" + prefixo;
 }
 
+void print( vector<string> codigo ) {
+  for( string s : codigo )
+    cout << s << " ";
+  cout << endl;  
+}
+
+vector<string> funcoes; // Acumula o código de todas funções
+
+vector<int> alinhamento_return; // Pilha de alinhamento por função: topo guarda quantos blocos '{ }' estão abertos
+
+string gera_temp( string nome ) {
+  static int t = 0;
+  return string("temp_") + nome + to_string(++t);
+}
+
+
+vector<set<string>> variavel_capturada; // Pilha de conjuntos de variáveis capturadas
+vector<int> escopo_base_lambda;
+
+// Determina se deve ou não capturar uma variável
+void trata_captura(string var) {
+  if (variavel_capturada.empty()) return;
+  
+  // Optimization: check local scope first
+  if (ts.back().count(var) > 0) return;
+  
+  // Search from nearest scope upwards (skipping local)
+  // ts.size() - 2 is the parent of local scope
+  for (int i = ts.size() - 2; i >= 1; i--) {
+    if (ts[i].count(var) > 0) {
+       // Found variable at scope i
+       
+       // Check for each active lambda if it needs to capture
+       for (int j = 0; j < variavel_capturada.size(); j++) {
+          // If the variable is defined in a scope strictly outside the lambda's base scope, capture it.
+          // escopo_base_lambda[j] is the index of the lambda's own scope.
+          // So if i < escopo_base_lambda[j], it is non-local.
+          if (i < escopo_base_lambda[j]) {
+             variavel_capturada[j].insert(var);
+          }
+       }
+       return; // Found the variable, stop searching (shadowing)
+    }
+  }
+}
+
+void empilha_variavel_capturada() {
+  variavel_capturada.push_back(set<string>());
+}
+
+void desempilha_variavel_capturada() {
+  if (!variavel_capturada.empty()) {
+    variavel_capturada.pop_back();
+  }
+}
+
+set<string> capturas_atuais() {
+  return variavel_capturada.empty() ? set<string>() : variavel_capturada.back();
+}
+
+
+// Gera código para criar o campo captura com as variáveis
+vector<string> gera_codigo_captura(const set<string>& capturas) {
+  // Modelo: f & f {} = '&funcao' 73 [<=] captura {} x x @ [<=] [<=] .
+
+  if (capturas.empty()) {
+    return vector<string>();
+  }
+  
+  vector<string> codigo;
+  // Cria campo 'captura' como objeto vazio
+  codigo += "captura";
+  codigo += "{}";
+  
+  // Para cada variável capturada, adiciona ao objeto captura
+  for (const string& var : capturas) {
+    codigo += var;
+    codigo += var;
+    codigo += "@";
+    codigo += "[<=]";
+  }
+  
+  codigo += "[<=]"; // Atribui o objeto captura à função
+  
+  return codigo;
+}
+
+
 void checa_simbolo( string nome, bool modificavel ) {
+
+  trata_captura(nome); // Verifica se a variável deve ser capturada
+
   for( int i = (int)ts.size() - 1; i >= 0; --i ) {
     auto& esc = ts[i];
     auto it = esc.find(nome);
@@ -164,94 +255,6 @@ void checa_simbolo( string nome, bool modificavel ) {
   // fprintf( stderr, "Erro: a variável '%s' não foi declarada na linha %d, coluna %d.\n", nome_var.c_str(), atrib.linha, atrib.coluna );
   exit( 1 );     
 }
-
-void print( vector<string> codigo ) {
-  for( string s : codigo )
-    cout << s << " ";
-  cout << endl;  
-}
-
-vector<string> funcoes; // Acumula o código de todas funções
-
-vector<int> alinhamento_return; // Pilha de alinhamento por função: topo guarda quantos blocos '{ }' estão abertos
-
-string gera_temp( string nome ) {
-  static int t = 0;
-  return string("temp_") + nome + to_string(++t);
-}
-
-
-// Determina se dcommo corrigir esse erro de shift reducee ou não capturar uma variável
-bool deve_capturar (string var){
-  if (ts.back().count(var) > 0) {
-    return false; // variável está no escopo atual, não captura
-  }
-  for (int i = 1; i < ts.size() - 1; i++) {
-    if (ts[i].count(var) > 0) {
-      return true; // variável encontrada em escopo anterior (exceto global), deve capturar
-    }
-  }
-  return false; // variável não encontrada em nenhum escopo, não captura
-}
-
-vector<set<string>> pilha_capturas; // Pilha de conjuntos de variáveis capturadas
-
-void empilha_capturas() {
-  pilha_capturas.push_back(set<string>());
-}
-
-void desempilha_capturas() {
-  if (!pilha_capturas.empty()) {
-    pilha_capturas.pop_back();
-  }
-}
-
-void adiciona_captura(string var) {
-  if (!pilha_capturas.empty()) {
-    pilha_capturas.back().insert(var);
-  }
-}
-
-set<string> capturas_atuais() {
-  return pilha_capturas.empty() ? set<string>() : pilha_capturas.back();
-}
-
-
-// Gera código para criar o campo captura com as variáveis
-vector<string> gera_codigo_captura(const set<string>& capturas) {
-  if (capturas.empty()) {
-    return vector<string>();
-  }
-  
-  vector<string> codigo;
-  // Cria campo 'captura' como objeto vazio
-  codigo += "'captura'";
-  codigo += "{}";
-  
-  // Para cada variável capturada, adiciona ao objeto captura
-  for (const string& var : capturas) {
-    codigo += "'" + var + "'";
-    codigo += var;
-    codigo += "@";
-    codigo += "[<=]";
-  }
-  
-  codigo += "[<=]"; // Atribui o objeto captura à função
-  
-  return codigo;
-}
-
-
-// define se estamos compilando ou não uma expressão lambda (que pode estar dentro de uma expressão lambda)
-int aninhamento_lambda = 0; 
-
-Atributos declara_param( Atributos& params, Atributos param, vector<string> inicializacao){
-  Atributos resultado = declara_variavel(Let, param, param.linha, param.coluna);
-
-  params.c += resultado.c;
-  return params; 
-}
-
 
 vector<string> pilha_arrays;   // Guarda o nome da variável do array
 vector<int> pilha_indices;     // Guarda o índice atual sendo preenchido
@@ -291,20 +294,17 @@ void incrementa_indice_array() {
 %token CDOUBLE CSTRING CINT
 %token AND OR ME_IG MA_IG DIF IGUAL
 %token MAIS_IGUAL MAIS_MAIS MENOS_IGUAL MENOS_MENOS
-%token SETA FPL PARAM_EQ
+%token SETA FPL
 // FPL = Fecha Parênteses Lambda - se precisa de comentário para explicar o nome da variável, é porque isso nõ tá bom
 
 %right ','
 %left ':'
 %right '=' MAIS_IGUAL MENOS_IGUAL SETA '?'
-%right FPL
-%nonassoc OR AND
-%nonassoc IGUAL DIF
-%nonassoc '<' '>' ME_IG MA_IG
+%left OR
+%left AND
+%nonassoc '<' '>' ME_IG MA_IG IGUAL DIF
 %left '+' '-'
 %left '*' '/' '%'
-
-%right '[' '('
 %left '.' 
 %left MAIS_MAIS MENOS_MENOS
 
@@ -334,6 +334,11 @@ BLOCO : '{' EMPILHA_TS { if (!alinhamento_return.empty()) alinhamento_return.bac
        { if (!alinhamento_return.empty()) alinhamento_return.back()--; ts.pop_back(); $$.c = "<{" + $4.c + "}>"; }
       | '{' '}' { $$.c = vector<string>{"<{", "}>"}; }
       ;
+
+/* CORPO_FUNCAO : '{' { if (!alinhamento_return.empty()) alinhamento_return.back()++; } CMDs '}'
+                { if (!alinhamento_return.empty()) alinhamento_return.back()--; $$.c = "<{" + $3.c + "}>"; }
+                | '{' '}' { $$.c = vector<string>{"<{", "}>"}; }
+                ; */
 
 DECL : LET LET_IDs { $$.c = $2.c; }
      | CONST CONST_IDs { $$.c = $2.c; }
@@ -491,7 +496,6 @@ PARAM : ID {  $$.c = $1.c;
         $$.linha = $1.linha;
         $$.coluna = $1.coluna;
         $$.contador = 1;   
-        // declara_param($1, {});
       }
       | ID '=' EOBJ { // Código do IF
         $$.c = $1.c;
@@ -499,7 +503,6 @@ PARAM : ID {  $$.c = $1.c;
         $$.linha = $1.linha;
         $$.coluna = $1.coluna;
         $$.contador = 1; 
-        // declara_param($1, $3.c);
         }
       ;
 
@@ -549,7 +552,7 @@ CAMPO : ID ':' EOBJ { $$.c = $1.c + $3.c + "[<=]"; }
       ;
 
 
-ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "="; }
+ATRIB : ID '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "="; }
       | LVALUEPROP '=' EOBJ { $$.c = $1.esq + $1.dir + $3.c + "[=]"; }
       | LVALUE MAIS_IGUAL EOBJ   { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $1.c + "@" + $3.c + "+" + "="; } // a += e  => a a @ e + =
       | LVALUE MENOS_IGUAL EOBJ  { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $1.c + "@" + $3.c + "-" + "="; } // a -= e  => a a @ e - =
@@ -599,17 +602,18 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
      | ID SETA { 
           ts.push_back( map<string, Simbolo>{} );
           declara_variavel(Var, $1, $1.linha, $1.coluna);
-          aninhamento_lambda++; 
           in_func++;
           alinhamento_return.push_back(0);
-          empilha_capturas();
+          empilha_variavel_capturada();
+          escopo_base_lambda.push_back(ts.size() - 1);
         } 
         ATRIB 
-        { aninhamento_lambda--;
+        { 
           in_func--;
           alinhamento_return.pop_back();
           set<string> capturas = capturas_atuais();
-          desempilha_capturas();
+          desempilha_variavel_capturada();
+          escopo_base_lambda.pop_back();
           ts.pop_back();
           
           string lbl_func = gera_label("lambda");
@@ -628,17 +632,18 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
      | ID SETA { 
           ts.push_back( map<string, Simbolo>{} );
           declara_variavel(Var, $1, $1.linha, $1.coluna);
-          aninhamento_lambda++; 
           in_func++;
           alinhamento_return.push_back(0);
-          empilha_capturas();
+          empilha_variavel_capturada();
+          escopo_base_lambda.push_back(ts.size() - 1);
         } 
         BLOCO 
-        { aninhamento_lambda--;
+        { 
           in_func--;
           alinhamento_return.pop_back();
           set<string> capturas = capturas_atuais();
-          desempilha_capturas();
+          desempilha_variavel_capturada();
+          escopo_base_lambda.pop_back();
           ts.pop_back();
           
           string lbl_func = gera_label("lambda");
@@ -656,18 +661,18 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
 
      // Lambda com múltiplos parâmetros e expressão: (a, b) => expr
      | '(' LISTA_PARAMs FPL SETA { 
-          aninhamento_lambda++; 
           in_func++;
           alinhamento_return.push_back(0);
-          empilha_capturas();
+          empilha_variavel_capturada();
+          escopo_base_lambda.push_back(ts.size() - 1);
         } 
         ATRIB 
         { 
-          aninhamento_lambda--;
           in_func--;
           alinhamento_return.pop_back();
           set<string> capturas = capturas_atuais();
-          desempilha_capturas();
+          desempilha_variavel_capturada();
+          escopo_base_lambda.pop_back();
           ts.pop_back(); // LISTA_PARAMs já empilhou
           
           string lbl_func = gera_label("lambda");
@@ -683,19 +688,19 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
         }
 
      // Lambda com múltiplos parâmetros e bloco: (a, b) => { ... }
-     | '(' LISTA_PARAMs FPL SETA { 
-          aninhamento_lambda++; 
+     | '(' LISTA_PARAMs FPL SETA {  
           in_func++;
           alinhamento_return.push_back(0);
-          empilha_capturas();
+          empilha_variavel_capturada();
+          escopo_base_lambda.push_back(ts.size() - 1);
         } 
         BLOCO 
-        { 
-          aninhamento_lambda--;
+        {
           in_func--;
           alinhamento_return.pop_back();
           set<string> capturas = capturas_atuais();
-          desempilha_capturas();
+          desempilha_variavel_capturada();
+          escopo_base_lambda.pop_back();
           ts.pop_back();
           
           string lbl_func = gera_label("lambda");
@@ -724,11 +729,7 @@ ATRIB : LVALUE '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "
      ;
       
 // Operadores binários e atribuição
-E : LVALUE  { checa_simbolo( $1.c[0], false ); 
-              if(aninhamento_lambda>0){
-                if(deve_capturar($1.c[0])) adiciona_captura($1.c[0]);
-              }    
-              $$.c = $1.c + "@"; } 
+E : LVALUE  { $$.c = $1.c + "@"; } 
   | LVALUEPROP { $$.c = $1.esq + $1.dir + "[@]"; }
   | MAIS_MAIS LVALUE { checa_simbolo( $2.c[0], true ); $$.c = $2.c + $2.c + "@" + "1" + "+" + "="; }
   | MENOS_MENOS LVALUE { checa_simbolo( $2.c[0], true ); $$.c = $2.c + $2.c + "@" + "1" + "-" + "="; }
@@ -783,19 +784,19 @@ E : LVALUE  { checa_simbolo( $1.c[0], false );
   | E '%' E { $$.c = $1.c + $3.c + "%"; }
   | '-' E     { $$.c = "0" + $2.c + "-"; } // unário -
   | '+' E     { $$.c = $2.c; }             // unário +
+  | E ASM     { $$.c = $1.c + $2.c; }
   | F
 
   | FUNCTION '(' LISTA_PARAMs ')' '{' 
-    { aninhamento_lambda++; 
-      in_func++;
+    { in_func++;
       alinhamento_return.push_back(0);
-      empilha_capturas();} 
+      empilha_variavel_capturada();} 
     CMDs '}' 
-    { aninhamento_lambda--;
+    { 
       in_func--;
       alinhamento_return.pop_back();
       set<string> capturas = capturas_atuais();
-      desempilha_capturas();
+      desempilha_variavel_capturada();
       ts.pop_back();  // LISTA_PARAMs empilhou
       
       string lbl_func = gera_label("anonima");
@@ -812,16 +813,15 @@ E : LVALUE  { checa_simbolo( $1.c[0], false );
               + "undefined" + "@" + "'&retorno'" + "@" + "~";
     }
    | FUNCTION '(' LISTA_PARAMs ')' '{' 
-    { aninhamento_lambda++; 
-      in_func++;
+    { in_func++;
       alinhamento_return.push_back(0); 
-      empilha_capturas(); } 
+      empilha_variavel_capturada(); } 
     '}' 
-    { aninhamento_lambda--;
+    { 
       in_func--;
       alinhamento_return.pop_back();
       set<string> capturas = capturas_atuais();
-      desempilha_capturas();
+      desempilha_variavel_capturada();
       ts.pop_back();
       
       string lbl_func = gera_label("anonima");
@@ -849,7 +849,7 @@ F1 : CDOUBLE
    | '[' { empilha_array(""); } ELEMS ']' 
      { desempilha_array();
        $$.c = vector<string>{"[]"} + $3.c; }
-   | CHAM_FUNC '(' LISTA_ARGS ')'  { $$.c = $3.c + to_string($3.n_args) + $1.c + "$"; }
+   | CHAM
    ;
 
 F2 : CINT
@@ -857,29 +857,27 @@ F2 : CINT
    | LVALUE MENOS_MENOS { checa_simbolo( $1.c[0], true ); $$.c = $1.c + "@" + $1.c + $1.c + "@" + "1" + "-" + "=" + "^"; } 
    | LVALUEPROP MAIS_MAIS 
       { string esq = gera_temp("esq"); 
-        string dir = gera_temp("dir");
-        
-        checa_simbolo( $1.c[0], true ); 
-        $$.c = vector<string>{"<{"} 
-             + esq + "&" + esq + $1.esq + "=" + "^"
-              + dir + "&" + dir + $1.dir + "=" + "^"
-              + esq + "@" + dir + "@" + "[@]" 
-              + esq + "@" + dir + "@"
-              + esq + "@" + dir + "@" + "[@]" 
-              + "1" + "+" + "[=]" + "^" + "}>"; 
+      string dir = gera_temp("dir");
+      
+      $$.c = vector<string>{"<{"} 
+            + esq + "&" + esq + $1.esq + "=" + "^"
+            + dir + "&" + dir + $1.dir + "=" + "^"
+            + esq + "@" + dir + "@" + "[@]" 
+            + esq + "@" + dir + "@"
+            + esq + "@" + dir + "@" + "[@]" 
+            + "1" + "+" + "[=]" + "^" + "}>"; 
       }
    | LVALUEPROP MENOS_MENOS 
       { string esq = gera_temp("esq"); 
-        string dir = gera_temp("dir");
-        
-        checa_simbolo( $1.c[0], true ); 
-        $$.c = vector<string>{"<{"} 
-              + esq + "&" + esq + $1.esq + "=" + "^"
-              + dir + "&" + dir + $1.dir + "=" + "^"
-              + esq + "@" + dir + "@" + "[@]" 
-              + esq + "@" + dir + "@"
-              + esq + "@" + dir + "@" + "[@]" 
-              + "1" + "-" + "[=]" + "^" + "}>"; 
+      string dir = gera_temp("dir");
+      
+      $$.c = vector<string>{"<{"} 
+            + esq + "&" + esq + $1.esq + "=" + "^"
+            + dir + "&" + dir + $1.dir + "=" + "^"
+            + esq + "@" + dir + "@" + "[@]" 
+            + esq + "@" + dir + "@"
+            + esq + "@" + dir + "@" + "[@]" 
+            + "1" + "-" + "[=]" + "^" + "}>"; 
       }
    ;
 
@@ -898,7 +896,14 @@ ELEM : EOBJ
        }
      ;
 
-
+CHAM : CHAM_FUNC '(' LISTA_ARGS ')'  
+       { $$.c = $3.c + to_string($3.n_args) + $1.c + "$"; }
+     | CHAM '(' LISTA_ARGS ')'  
+       { // Permite f(x)(y)(z)
+         $$.c = $3.c + to_string($3.n_args) + $1.c + "$"; 
+       }
+     ;
+     
 CHAM_FUNC : ID           { checa_simbolo($1.c[0], false); $$.c = $1.c + "@"; }
           | LVALUEPROP   { $$.c = $1.esq + $1.dir + "[@]"; }
           | '(' EOBJ ')' { $$.c = $2.c; }     // (log) retorna o rvalue do log

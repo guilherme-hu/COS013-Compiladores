@@ -221,6 +221,13 @@ f = (x, y=0) => x*y;
 f = function(x,y){return x*y};
 
 
+let f = x => y => h => h*x*y;
+
+
+" f & f {} = ^ . " => cria objeto vazio
+" f & f {} = '&funcao' 73 [<=] . " 
+" f & f {} = '&funcao' 73 [<=] captura {} [<=] . " -> funcao fica no topo da pilha
+" x & x 6 = ^ f & f {} = '&funcao' 73 [<=] captura {} x x @ [<=] [<=] . " -> captura o x
 
 
 
@@ -340,12 +347,6 @@ let par = function( n ) {
 
 let a = par( 4 );
 
---- Program output ---
-Erro: 'return' fora de função.
-=== Console ===
-=== Vars ===
-|{ undefined: undefined; }|
-=== Pilha ===
 
 --- Expected output (exact text)---
 === Console ===
@@ -553,15 +554,11 @@ let d = f( 8.1 )( 7.1 );
 
 
 --- Expected output (text)---
-=== Console ===
-=== Erro: Variável não declarada: x ===
-=== Instrução: 53 ===
+== Console ===
 === Vars ===
-|{ b: { &funcao: ##; }; c: undefined; f: { &funcao: ##; }; undefined: undefined; }|
-|{ &retorno: ##; arguments: [ 0: 7; ]; y: 7; }|
+|{ b: { &funcao: ##; captura: { x: 9; }; }; c: 63; d: 57.51; f: { &funcao: ##; }; undefined: undefined; }|
 === Pilha ===
-|c|
-"
+
 
 Test 14: #14 Lambda retornando lambda
 Incorrect program output
@@ -618,4 +615,119 @@ chamou 12
 chamou [ 0: 2; ]
 === Vars ===
 |{ c: [ 0: 1; 1: { a: [ 0: 8; 1: 1; ]; }; ]; d: 9; f: { &funcao: ##; }; k: [ 0: 0; ]; log: { &funcao: ##; }; to_string: { &funcao: ##; }; undefined: undefined; }|
+=== Pilha ===
+
+
+Test 18: #18 Lambda com captura dentro de loop
+Incorrect program output
+--- Input ---
+let log = msg => msg asm{println # undefined};
+let f = [];
+
+{
+  let i;
+
+  for( i = 0; i < 3; i++ )
+    f[i] = () => log(i);
+}
+{
+  for( let j = 0; j < 3; j++ )
+    f[j]();
+}
+
+--- Program output ---
+=== Console ===
+=== Erro: Instrução inválida: : ===
+=== Instrução: 4 ===
+=== Vars ===
+|{ undefined: undefined; }|
+=== Pilha ===
+|syntax|
+|error|
+|Proximo|
+|a|
+
+--- Expected output (exact text)---
+=== Console ===
+0
+1
+2
+=== Vars ===
+|{ f: [ 0: { &funcao: ##; captura: { i: 0; }; }; 1: { &funcao: ##; captura: { i: 1; }; }; 2: { &funcao: ##; captura: { i: 2; }; }; ]; log: { &funcao: ##; }; undefined: undefined; }|
+=== Pilha ===
+
+Test 19: #19 Lambda com captura complexa
+Incorrect program output
+--- Input ---
+let log = msg => msg asm{println # undefined};
+
+function cria( nome ) {
+  let obj = { print: () => log( nome ) };
+
+  return () => obj;
+}
+
+let a = cria( "Oi" );
+
+cria( "Nada" )().print();
+
+a().print();
+
+--- Program output ---
+=== Console ===
+=== Erro: Instrução inválida: : ===
+=== Instrução: 4 ===
+=== Vars ===
+|{ undefined: undefined; }|
+=== Pilha ===
+|syntax|
+|error|
+|Proximo|
+|a|
+
+--- Expected output (exact text)---
+=== Console ===
+Nada
+Oi
+=== Vars ===
+|{ a: { &funcao: ##; captura: { obj: { print: { &funcao: ##; captura: { nome: Oi; }; }; }; }; }; cria: { &funcao: ##; }; log: { &funcao: ##; }; undefined: undefined; }|
+=== Pilha ===
+
+Test 20: #20 Lambda com captura de objeto
+Incorrect program output
+--- Input ---
+let log = msg => msg asm{println # undefined};
+
+function cria( obj ) {
+  return (x) => {
+    obj.nome = x; 
+    obj.i++;
+    return obj; 
+  };
+}
+
+let o = { i: 0 };
+let b = cria( o );
+
+log( b( "Jose" ) );
+log( b( "Manoel" ) );
+
+--- Program output ---
+=== Console ===
+=== Erro: Instrução inválida: : ===
+=== Instrução: 4 ===
+=== Vars ===
+|{ undefined: undefined; }|
+=== Pilha ===
+|syntax|
+|error|
+|Proximo|
+|a|
+
+--- Expected output (exact text)---
+=== Console ===
+{ i: 1; nome: Jose; }
+{ i: 2; nome: Manoel; }
+=== Vars ===
+|{ b: { &funcao: ##; captura: { obj: { i: 2; nome: Manoel; }; }; }; cria: { &funcao: ##; }; log: { &funcao: ##; }; o: { i: 2; nome: Manoel; }; undefined: undefined; }|
 === Pilha ===
