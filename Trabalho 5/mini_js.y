@@ -77,6 +77,7 @@ struct Simbolo {
   TipoDecl tipo;
   int linha;
   int coluna;
+  bool isFunc = false;
 };
 
 // Tabela de símbolos
@@ -85,6 +86,8 @@ vector< map< string, Simbolo > > ts = { { } };
 
 Atributos declara_variavel( TipoDecl decl, Atributos atrib, int linha, int coluna ) {
   string nome_var = atrib.c[0];
+  
+  // cerr << "DEBUG declara_variavel: var=" << nome_var << " in scope " << (ts.size() - 1) << " (ts.size()=" << ts.size() << ")" << endl;
 
   if (decl == Var){
     if (ts.back().count(nome_var) > 0){
@@ -165,30 +168,27 @@ vector<int> escopo_base_lambda;
 void trata_captura(string var) {
   if (variavel_capturada.empty()) return;
   
-  // Optimization: check local scope first
-  if (ts.back().count(var) > 0) return;
+  // 1. Se a variável está no escopo local (topo), não captura.
+  if (ts.back().count(var) > 0) return; 
   
-  // Check if variable is in global scope - global variables are never captured
-  if (ts[0].count(var) > 0) return;
-  
-  // Search from nearest scope upwards (skipping local and global)
-  // ts.size() - 2 is the parent of local scope
-  for (int i = ts.size() - 2; i >= 1; i--) {
+  // 2. Procura apenas nos escopos INTERMEDIÁRIOS (ignora Global no índice 0)
+  //    Isso garante que globais como 'k' nunca sejam capturadas.
+  for (int i = 1; i < (int)ts.size() - 1; i++) {
     if (ts[i].count(var) > 0) {
-       // Found variable at scope i
-       
-       // Check for each active lambda if it needs to capture
-       for (int j = 0; j < variavel_capturada.size(); j++) {
-          // If the variable is defined in a scope strictly outside the lambda's base scope, capture it.
-          // escopo_base_lambda[j] is the index of the lambda's own scope.
-          // So if i < escopo_base_lambda[j], it is non-local.
-          if (i < escopo_base_lambda[j]) {
-             variavel_capturada[j].insert(var);
-          }
-       }
-       return; // Found the variable, stop searching (shadowing)
+      // Se for função, não captura
+      if (ts[i][var].isFunc) return; 
+      
+      // Se achou a variável no escopo 'i', verifica em quais lambdas ela precisa ser capturada
+      for (int j = 0; j < variavel_capturada.size(); j++) {
+        // Só captura se a variável foi definida em um escopo ANTERIOR à criação da lambda
+        if (i < escopo_base_lambda[j]) {
+           variavel_capturada[j].insert(var);
+        }
+      }
+      return; 
     }
   }
+  // Se chegou aqui, ou é global (índice 0) ou não existe. Não captura.
 }
 
 void empilha_variavel_capturada() {
@@ -323,7 +323,7 @@ CMDs : CMD CMDs { $$.c = $1.c + $2.c; };
 
 // ; faz parte do comando, bloco por exemplo não termina com ;
 CMD : DECL ';'
-    | ATRIB ';' { $$.c = $1.c + "^"; }
+    | ECOND ';' { $$.c = $1.c + "^"; }
     | CMD_IF
     | CMD_FOR
     | CMD_WHILE
@@ -338,10 +338,10 @@ BLOCO : '{' EMPILHA_TS { if (!alinhamento_return.empty()) alinhamento_return.bac
       | '{' '}' { $$.c = vector<string>{"<{", "}>"}; }
       ;
 
-/* CORPO_FUNCAO : '{' { if (!alinhamento_return.empty()) alinhamento_return.back()++; } CMDs '}'
-                { if (!alinhamento_return.empty()) alinhamento_return.back()--; $$.c = "<{" + $3.c + "}>"; }
-                | '{' '}' { $$.c = vector<string>{"<{", "}>"}; }
-                ; */
+BLOCO_FUNC : '{' CMDs '}' 
+           { $$.c = $2.c; }
+           | '{' '}' { $$.c = vector<string>{}; }
+           ;
 
 DECL : LET LET_IDs { $$.c = $2.c; }
      | CONST CONST_IDs { $$.c = $2.c; }
@@ -442,8 +442,8 @@ EMPILHA_TS : { ts.push_back( map< string, Simbolo >{} ); } // cria uma nova tabe
 /* DESEMPILHA_TS : { ts.pop_back(); } // remove a tabela de símbolos do topo da pilha de tabelas
            ; */
 
-CMD_FUNC : FUNCTION ID { $$ = declara_variavel( Var, $2, $2.linha, $2.coluna ); }
-          '(' EMPILHA_TS { ++in_func; alinhamento_return.push_back(0); } LISTA_PARAMs ')' BLOCO
+CMD_FUNC : FUNCTION ID { $$ = declara_variavel( Var, $2, $2.linha, $2.coluna ); ts.back()[$2.c[0]].isFunc = true; }
+          '(' EMPILHA_TS { ++in_func; alinhamento_return.push_back(0); } LISTA_PARAMs ')' BLOCO_FUNC
           { --in_func;
             alinhamento_return.pop_back(); // Sai do contexto de alinhamento desta função
 
@@ -514,19 +514,15 @@ CMD_RETURN : RETURN EOBJ ';'
                  cerr << "Erro: Não é permitido 'return' fora de funções." << endl; 
                  exit(1); 
                }
-               vector<string> pops;
-               for (int i = 0; i < alinhamento_return.back(); ++i) pops += "}>";
-               // avalia E, prepara '&retorno', fecha blocos e retorna
-               $$.c = $2.c + "'&retorno'" + "@" + pops + "~"; 
+               // Apenas: Valor + Endereço + Retorno (o ~ já fecha os escopos)
+               $$.c = $2.c + "'&retorno'" + "@" + "~"; 
              }
            | RETURN ';'
              { if (alinhamento_return.empty()) { 
                  cerr << "Erro: Não é permitido 'return' fora de funções." << endl; 
                  exit(1); 
                }
-               vector<string> pops;
-               for (int i = 0; i < alinhamento_return.back(); ++i) pops += "}>";
-               $$.c = vector<string>{"undefined"} + "@" + "'&retorno'" + "@" + pops + "~"; 
+               $$.c = vector<string>{"undefined"} + "@" + "'&retorno'" + "@" + "~"; 
              }  
            ;
 
@@ -534,27 +530,40 @@ LVALUE : ID { checa_simbolo( $1.c[0], false ); $$.c = $1.c; }
        ;
 
 LVALUEPROP : LVALUE '[' EOBJ ']'   { $$.c.clear(); $$.esq = $1.c + "@"; $$.dir = $3.c; }    // b[0]
-           | LVALUE '.' ID      { $$.c.clear(); $$.esq = $1.c + "@"; $$.dir = $3.c; }   // b.m 
+           | LVALUE '.' ID      { $$.c.clear(); $$.esq = $1.c + "@"; $$.dir = vector<string>{ $3.c[0] }; }   // b.m 
            | LVALUEPROP '[' EOBJ ']' { $$.c.clear(); $$.esq = $1.esq + $1.dir + "[@]"; $$.dir = $3.c; } 
-           | LVALUEPROP '.' ID    { $$.c.clear(); $$.esq = $1.esq + $1.dir + "[@]"; $$.dir = $3.c; } 
-           | F '[' EOBJ ']'          { $$.c.clear(); $$.esq = $1.c; $$.dir = $3.c; }; 
-           | F1 '.' ID            { $$.c.clear(); $$.esq = $1.c; $$.dir = $3.c; }
+           | LVALUEPROP '.' ID    { $$.c.clear(); $$.esq = $1.esq + $1.dir + "[@]"; $$.dir = vector<string>{ $3.c[0] }; } 
+           | F '[' EOBJ ']'          { $$.c.clear(); $$.esq = $1.c; $$.dir = $3.c; }
+           | F1 '.' ID            { $$.c.clear(); $$.esq = $1.c; $$.dir = vector<string>{ $3.c[0] }; }
            ;
 
 EOBJ : '{' '}' { $$.c = vector<string>{"{}"}; } // Objeto vazio
      | '{' CAMPOS '}' { $$.c = vector<string>{"{}"} + $2.c; } // Objeto com campos
-     | ATRIB
+     | ECOND
      ;
 
 CAMPOS : CAMPO ',' CAMPOS { $$.c = $1.c + $3.c; }
        | CAMPO
        ;
 
-CAMPO : ID ':' EOBJ { $$.c = $1.c + $3.c + "[<=]"; }
-      | ID { $$.c = $1.c + "undefined" + "@" + "[<=]"; }
+CAMPO : ID ':' EOBJ { $$.c = vector<string>{ $1.c[0] } + $3.c + "[<=]"; }
+      | ID { $$.c = vector<string>{ $1.c[0] } + "undefined" + "@" + "[<=]"; }
       ;
 
-
+ECOND : ECOND '?' EOBJ ':' EOBJ
+        { string lbl_else = gera_label("tern_cond");
+          string lbl_fim = gera_label("tern_fim");
+          $$.c = $1.c +
+                  "!" + lbl_else + "?" +     // se falso, vai para else
+                  $3.c +                     // então
+                  lbl_fim + "#" +            // pula para o fim
+                  define_label(lbl_else) +   // else
+                  $5.c +                     // senão
+                  define_label(lbl_fim);     // fim
+        }
+      | ATRIB
+      ;
+      
 ATRIB : ID '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "="; }
       | LVALUEPROP '=' EOBJ { $$.c = $1.esq + $1.dir + $3.c + "[=]"; }
       | LVALUE MAIS_IGUAL EOBJ   { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $1.c + "@" + $3.c + "+" + "="; } // a += e  => a a @ e + =
@@ -601,7 +610,6 @@ ATRIB : ID '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "="; 
       }
      | E
 
-
      | ID SETA { 
           ts.push_back( map<string, Simbolo>{} );
           declara_variavel(Var, $1, $1.linha, $1.coluna);
@@ -640,7 +648,7 @@ ATRIB : ID '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "="; 
           empilha_variavel_capturada();
           escopo_base_lambda.push_back(ts.size() - 1);
         } 
-        BLOCO 
+        BLOCO_FUNC
         { 
           in_func--;
           alinhamento_return.pop_back();
@@ -697,7 +705,7 @@ ATRIB : ID '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "="; 
           empilha_variavel_capturada();
           escopo_base_lambda.push_back(ts.size() - 1);
         } 
-        BLOCO 
+        BLOCO_FUNC
         {
           in_func--;
           alinhamento_return.pop_back();
@@ -716,18 +724,6 @@ ATRIB : ID '=' EOBJ { checa_simbolo( $1.c[0], true ); $$.c = $1.c + $3.c + "="; 
                   + $2.c  // código dos parâmetros
                   + $6.c  // bloco
                   + "undefined" + "@" + "'&retorno'" + "@" + "~";
-        }
-        
-     | E '?' EOBJ ':' EOBJ
-        { string lbl_else = gera_label("else_cond");
-          string lbl_fim = gera_label("fim_cond");
-          $$.c = $1.c +
-                  "!" + lbl_else + "?" +     // se falso, vai para else
-                  $3.c +                     // então
-                  lbl_fim + "#" +            // pula para o fim
-                  define_label(lbl_else) +   // else
-                  $5.c +                     // senão
-                  define_label(lbl_fim);     // fim
         }
      ;
       

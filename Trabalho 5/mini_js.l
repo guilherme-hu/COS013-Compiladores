@@ -20,6 +20,7 @@ vector<string> tokeniza( const string& str ) {
     
     // Lê do stream até encontrar um espaço
     while ( getline( tokenStream, token, ' ' ) ) {
+        
         // Remove espaços em branco no início/fim de cada token (se houver)
         string trimmed_token = trim(token, " \t\n\r"); 
         if ( !trimmed_token.empty() ) {
